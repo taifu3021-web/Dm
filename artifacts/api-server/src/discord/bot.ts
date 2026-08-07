@@ -51,28 +51,75 @@ const commands = [
     ),
 ].map((command) => command.toJSON());
 
-let started = false;
+type DmWorker = {
+  client: Client;
+  online: boolean;
+  pending: number;
+  enqueue: (userId: string, message: string) => Promise<void>;
+};
 
-function createDmQueue() {
+function createDmWorker(client: Client): DmWorker {
   let queue: Promise<void> = Promise.resolve();
 
-  return (member: User, message: string, repeat: number): Promise<void> => {
-    const sendTask = queue.then(async () => {
-      for (let index = 0; index < repeat; index += 1) {
+  return {
+    client,
+    online: false,
+    pending: 0,
+    enqueue: (userId: string, message: string): Promise<void> => {
+      const sendTask = queue.then(async () => {
         try {
+          const member = await client.users.fetch(userId);
           await member.send(message);
         } finally {
           await new Promise<void>((resolve) =>
             setTimeout(resolve, DM_RATE_LIMIT_MS),
           );
         }
-      }
-    });
+      });
 
-    queue = sendTask.catch(() => undefined);
-    return sendTask;
+      queue = sendTask.catch(() => undefined);
+      return sendTask;
+    },
   };
 }
+
+function createDmDispatcher() {
+  const workers: DmWorker[] = [];
+
+  return {
+    addWorker(worker: DmWorker): void {
+      workers.push(worker);
+    },
+    send: async (
+      userId: string,
+      message: string,
+      repeat: number,
+    ): Promise<void> => {
+      const onlineWorkers = workers.filter((worker) => worker.online);
+      if (onlineWorkers.length === 0) {
+        throw new Error("No Discord DM workers are online");
+      }
+
+      const tasks: Promise<void>[] = [];
+      for (let index = 0; index < repeat; index += 1) {
+        const worker = onlineWorkers.reduce((leastBusy, candidate) =>
+          candidate.pending < leastBusy.pending ? candidate : leastBusy,
+        );
+        worker.pending += 1;
+        const task = worker
+          .enqueue(userId, message)
+          .finally(() => {
+            worker.pending -= 1;
+          });
+        tasks.push(task);
+      }
+
+      await Promise.all(tasks);
+    },
+  };
+}
+
+let started = false;
 
 async function registerCommands(
   applicationId: string,
@@ -93,7 +140,11 @@ async function registerCommands(
 
 async function handleCommand(
   interaction: ChatInputCommandInteraction,
-  sendDm: (member: User, message: string, repeat: number) => Promise<void>,
+  sendDm: (
+    userId: string,
+    message: string,
+    repeat: number,
+  ) => Promise<void>,
 ): Promise<void> {
   if (interaction.commandName === "ping") {
     await interaction.reply({
@@ -147,7 +198,7 @@ async function handleCommand(
   await interaction.deferReply({ ephemeral: true });
 
   try {
-    await sendDm(member, message, repeat);
+    await sendDm(member.id, message, repeat);
     await interaction.editReply(
       `已成功發送 ${repeat} 次私訊。每次發送間隔 0.8 秒。`,
     );
@@ -179,12 +230,17 @@ export function startDiscordBot(): void {
   }
   started = true;
 
+  const dmDispatcher = createDmDispatcher();
+
   for (const [index, token] of tokens.entries()) {
     const isMainBot = index === 0;
     const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-    const sendDm = createDmQueue();
+    const worker = createDmWorker(client);
+    dmDispatcher.addWorker(worker);
 
     client.once(Events.ClientReady, async (readyClient) => {
+      worker.online = true;
+
       if (!isMainBot) {
         logger.info("Discord worker bot is online");
         return;
@@ -215,7 +271,7 @@ export function startDiscordBot(): void {
       }
 
       try {
-        await handleCommand(interaction, sendDm);
+        await handleCommand(interaction, dmDispatcher.send);
       } catch (error) {
         logger.error(
           { err: error, command: interaction.commandName },
