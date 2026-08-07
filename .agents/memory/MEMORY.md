@@ -1,0 +1,1 @@
+- [Discord bot roles](discord-bot-roles.md) — WORKER_BOT_TOKENS 的第一個 Token 是主機器人，其餘 Token 只作為登入中的 Worker Bot。

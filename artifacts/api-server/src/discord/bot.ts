@@ -179,11 +179,17 @@ export function startDiscordBot(): void {
   }
   started = true;
 
-  for (const token of tokens) {
+  for (const [index, token] of tokens.entries()) {
+    const isMainBot = index === 0;
     const client = new Client({ intents: [GatewayIntentBits.Guilds] });
     const sendDm = createDmQueue();
 
     client.once(Events.ClientReady, async (readyClient) => {
+      if (!isMainBot) {
+        logger.info("Discord worker bot is online");
+        return;
+      }
+
       try {
         await registerCommands(
           readyClient.application.id,
@@ -200,6 +206,10 @@ export function startDiscordBot(): void {
     });
 
     client.on(Events.InteractionCreate, async (interaction) => {
+      if (!isMainBot) {
+        return;
+      }
+
       if (!interaction.isChatInputCommand()) {
         return;
       }
