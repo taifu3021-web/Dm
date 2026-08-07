@@ -85,27 +85,28 @@ function createDmDispatcher() {
       userId: string,
       message: string,
       repeat: number,
-    ): Promise<void> => {
+    ): Promise<number> => {
       const onlineWorkers = workers.filter((worker) => worker.online);
       if (onlineWorkers.length === 0) {
         throw new Error("No Discord DM workers are online");
       }
+      if (!Number.isInteger(repeat) || repeat < 1 || repeat > MAX_REPEAT) {
+        throw new Error(`repeat must be between 1 and ${MAX_REPEAT}`);
+      }
 
       const tasks: Promise<void>[] = [];
-      for (let index = 0; index < repeat; index += 1) {
-        const worker = onlineWorkers.reduce((leastBusy, candidate) =>
-          candidate.pending < leastBusy.pending ? candidate : leastBusy,
-        );
-        worker.pending += 1;
-        const task = worker
-          .enqueue(userId, message)
-          .finally(() => {
+      for (const worker of onlineWorkers) {
+        for (let index = 0; index < repeat; index += 1) {
+          worker.pending += 1;
+          const task = worker.enqueue(userId, message).finally(() => {
             worker.pending -= 1;
           });
-        tasks.push(task);
+          tasks.push(task);
+        }
       }
 
       await Promise.all(tasks);
+      return onlineWorkers.length;
     },
   };
 }
@@ -135,7 +136,7 @@ async function handleCommand(
     userId: string,
     message: string,
     repeat: number,
-  ) => Promise<void>,
+  ) => Promise<number>,
 ): Promise<void> {
   if (interaction.commandName !== "dm") {
     return;
@@ -164,14 +165,15 @@ async function handleCommand(
   await interaction.deferReply({ ephemeral: true });
 
   try {
-    await sendDm(member.id, message, repeat);
+    const workerCount = await sendDm(member.id, message, repeat);
+    const totalCount = workerCount * repeat;
     await interaction.editReply(
-      `已成功發送 ${repeat} 次私訊。每次發送間隔 0.8 秒。`,
+      `已由 ${workerCount} 台機器人各發送 ${repeat} 次，共 ${totalCount} 次。每台機器人每次發送間隔 0.8 秒。`,
     );
   } catch (error) {
     logger.warn({ err: error }, "Discord DM delivery failed");
     await interaction.editReply(
-      `無法完成 ${repeat} 次私訊。對方可能關閉了私人訊息，或機器人沒有權限傳送。`,
+      `無法完成每台機器人 ${repeat} 次的私訊任務。對方可能關閉了私人訊息，或機器人沒有權限傳送。`,
     );
   }
 }
