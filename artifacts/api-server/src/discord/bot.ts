@@ -12,6 +12,7 @@ import {
 import { logger } from "../lib/logger";
 
 const DM_RATE_LIMIT_MS = 800;
+const MAX_REPEAT = 100;
 
 const commands = [
   new SlashCommandBuilder()
@@ -39,6 +40,14 @@ const commands = [
         .setDescription("要發送的訊息，最多 2000 個字元")
         .setMaxLength(2000)
         .setRequired(true),
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName("repeat")
+        .setDescription(`重複發送次數，最多 ${MAX_REPEAT} 次`)
+        .setMinValue(1)
+        .setMaxValue(MAX_REPEAT)
+        .setRequired(false),
     ),
 ].map((command) => command.toJSON());
 
@@ -48,14 +57,16 @@ let started = false;
 function createDmQueue() {
   let queue: Promise<void> = Promise.resolve();
 
-  return (member: User, message: string): Promise<void> => {
+  return (member: User, message: string, repeat: number): Promise<void> => {
     const sendTask = queue.then(async () => {
-      try {
-        await member.send(message);
-      } finally {
-        await new Promise<void>((resolve) =>
-          setTimeout(resolve, DM_RATE_LIMIT_MS),
-        );
+      for (let index = 0; index < repeat; index += 1) {
+        try {
+          await member.send(message);
+        } finally {
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, DM_RATE_LIMIT_MS),
+          );
+        }
       }
     });
 
@@ -84,7 +95,7 @@ async function registerCommands(applicationId: string, guildId?: string) {
 
 async function handleCommand(
   interaction: ChatInputCommandInteraction,
-  sendDm: (member: User, message: string) => Promise<void>,
+  sendDm: (member: User, message: string, repeat: number) => Promise<void>,
 ): Promise<void> {
   if (interaction.commandName === "ping") {
     await interaction.reply({
@@ -125,6 +136,7 @@ async function handleCommand(
 
   const member = interaction.options.getUser("member", true);
   const message = interaction.options.getString("message", true).trim();
+  const repeat = interaction.options.getInteger("repeat") ?? 1;
 
   if (!message) {
     await interaction.reply({
@@ -137,12 +149,14 @@ async function handleCommand(
   await interaction.deferReply({ ephemeral: true });
 
   try {
-    await sendDm(member, message);
-    await interaction.editReply(`已成功私訊 ${member.tag}。`);
+    await sendDm(member, message, repeat);
+    await interaction.editReply(
+      `已成功私訊 ${member.tag} ${repeat} 次。每次發送間隔 0.8 秒。`,
+    );
   } catch (error) {
     logger.warn({ err: error, userId: member.id }, "Discord DM delivery failed");
     await interaction.editReply(
-      `無法私訊 ${member.tag}。對方可能關閉了私人訊息，或機器人沒有權限傳送。`,
+      `無法完成對 ${member.tag} 的 ${repeat} 次私訊。對方可能關閉了私人訊息，或機器人沒有權限傳送。`,
     );
   }
 }
