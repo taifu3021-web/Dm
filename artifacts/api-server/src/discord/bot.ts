@@ -16,15 +16,6 @@ const MAX_REPEAT = 100;
 
 const commands = [
   new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("檢查機器人是否正常運作"),
-  new SlashCommandBuilder()
-    .setName("help")
-    .setDescription("查看機器人可用指令"),
-  new SlashCommandBuilder()
-    .setName("about")
-    .setDescription("查看機器人資訊"),
-  new SlashCommandBuilder()
     .setName("dm")
     .setDescription("管理員對指定成員發送私訊")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator.toString())
@@ -146,31 +137,6 @@ async function handleCommand(
     repeat: number,
   ) => Promise<void>,
 ): Promise<void> {
-  if (interaction.commandName === "ping") {
-    await interaction.reply({
-      content: `Pong！延遲 ${interaction.client.ws.ping}ms`,
-      ephemeral: true,
-    });
-    return;
-  }
-
-  if (interaction.commandName === "help") {
-    await interaction.reply({
-      content:
-        "**可用指令**\n`/ping` — 檢查機器人狀態\n`/help` — 查看這份說明\n`/about` — 查看機器人資訊\n`/dm` — 管理員私訊指定成員",
-      ephemeral: true,
-    });
-    return;
-  }
-
-  if (interaction.commandName === "about") {
-    await interaction.reply({
-      content: "這是一個使用 discord.js 建立的 Discord 機器人。",
-      ephemeral: true,
-    });
-    return;
-  }
-
   if (interaction.commandName !== "dm") {
     return;
   }
