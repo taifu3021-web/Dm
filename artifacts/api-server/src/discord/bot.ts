@@ -88,7 +88,7 @@ async function registerCommands(applicationId: string, guildId?: string) {
 
   await rest.put(route, { body: commands });
   logger.info(
-    { scope: guildId ? "guild" : "global", guildId },
+    { scope: guildId ? "guild" : "global" },
     "Discord slash commands registered",
   );
 }
@@ -151,12 +151,12 @@ async function handleCommand(
   try {
     await sendDm(member, message, repeat);
     await interaction.editReply(
-      `已成功私訊 ${member.tag} ${repeat} 次。每次發送間隔 0.8 秒。`,
+      `已成功發送 ${repeat} 次私訊。每次發送間隔 0.8 秒。`,
     );
   } catch (error) {
-    logger.warn({ err: error, userId: member.id }, "Discord DM delivery failed");
+    logger.warn({ err: error }, "Discord DM delivery failed");
     await interaction.editReply(
-      `無法完成對 ${member.tag} 的 ${repeat} 次私訊。對方可能關閉了私人訊息，或機器人沒有權限傳送。`,
+      `無法完成 ${repeat} 次私訊。對方可能關閉了私人訊息，或機器人沒有權限傳送。`,
     );
   }
 }
@@ -184,10 +184,7 @@ export function startDiscordBot(): void {
         readyClient.application.id,
         process.env["DISCORD_GUILD_ID"],
       );
-      logger.info(
-        { username: readyClient.user.tag },
-        "Discord bot is online",
-      );
+      logger.info("Discord bot is online");
     } catch (error) {
       logger.error({ err: error }, "Discord slash command registration failed");
     }
