@@ -51,7 +51,6 @@ const commands = [
     ),
 ].map((command) => command.toJSON());
 
-let client: Client | undefined;
 let started = false;
 
 function createDmQueue() {
@@ -75,12 +74,11 @@ function createDmQueue() {
   };
 }
 
-async function registerCommands(applicationId: string, guildId?: string) {
-  const token = process.env["DISCORD_BOT_TOKEN"];
-  if (!token) {
-    return;
-  }
-
+async function registerCommands(
+  applicationId: string,
+  token: string,
+  guildId?: string,
+) {
   const rest = new REST({ version: "10" }).setToken(token);
   const route = guildId
     ? Routes.applicationGuildCommands(applicationId, guildId)
@@ -162,10 +160,16 @@ async function handleCommand(
 }
 
 export function startDiscordBot(): void {
-  const token = process.env["DISCORD_BOT_TOKEN"];
-  if (!token) {
+  const configuredTokens =
+    process.env["WORKER_BOT_TOKENS"] ?? process.env["DISCORD_BOT_TOKEN"] ?? "";
+  const tokens = configuredTokens
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  if (tokens.length === 0) {
     logger.warn(
-      "DISCORD_BOT_TOKEN is not configured; Discord bot will remain offline",
+      "WORKER_BOT_TOKENS is not configured; Discord bots will remain offline",
     );
     return;
   }
@@ -175,49 +179,54 @@ export function startDiscordBot(): void {
   }
   started = true;
 
-  client = new Client({ intents: [GatewayIntentBits.Guilds] });
-  const sendDm = createDmQueue();
+  for (const token of tokens) {
+    const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+    const sendDm = createDmQueue();
 
-  client.once(Events.ClientReady, async (readyClient) => {
-    try {
-      await registerCommands(
-        readyClient.application.id,
-        process.env["DISCORD_GUILD_ID"],
-      );
-      logger.info("Discord bot is online");
-    } catch (error) {
-      logger.error({ err: error }, "Discord slash command registration failed");
-    }
-  });
-
-  client.on(Events.InteractionCreate, async (interaction) => {
-    if (!interaction.isChatInputCommand()) {
-      return;
-    }
-
-    try {
-      await handleCommand(interaction, sendDm);
-    } catch (error) {
-      logger.error(
-        { err: error, command: interaction.commandName },
-        "Discord command failed",
-      );
-
-      const response = {
-        content: "指令執行時發生錯誤，請稍後再試。",
-        ephemeral: true,
-      };
-
-      if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(response);
-      } else {
-        await interaction.reply(response);
+    client.once(Events.ClientReady, async (readyClient) => {
+      try {
+        await registerCommands(
+          readyClient.application.id,
+          token,
+          process.env["DISCORD_GUILD_ID"],
+        );
+        logger.info("Discord bot is online");
+      } catch (error) {
+        logger.error(
+          { err: error },
+          "Discord slash command registration failed",
+        );
       }
-    }
-  });
+    });
 
-  client.login(token).catch((error) => {
-    started = false;
-    logger.error({ err: error }, "Discord bot login failed");
-  });
+    client.on(Events.InteractionCreate, async (interaction) => {
+      if (!interaction.isChatInputCommand()) {
+        return;
+      }
+
+      try {
+        await handleCommand(interaction, sendDm);
+      } catch (error) {
+        logger.error(
+          { err: error, command: interaction.commandName },
+          "Discord command failed",
+        );
+
+        const response = {
+          content: "指令執行時發生錯誤，請稍後再試。",
+          ephemeral: true,
+        };
+
+        if (interaction.deferred || interaction.replied) {
+          await interaction.editReply(response);
+        } else {
+          await interaction.reply(response);
+        }
+      }
+    });
+
+    client.login(token).catch((error) => {
+      logger.error({ err: error }, "Discord bot login failed");
+    });
+  }
 }
