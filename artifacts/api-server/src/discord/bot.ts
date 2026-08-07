@@ -130,6 +130,24 @@ async function registerCommands(
   );
 }
 
+async function clearCommands(
+  applicationId: string,
+  token: string,
+  guildId?: string,
+): Promise<void> {
+  const rest = new REST({ version: "10" }).setToken(token);
+  await rest.put(Routes.applicationCommands(applicationId), { body: [] });
+  if (guildId) {
+    await rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
+      body: [],
+    });
+  }
+  logger.info(
+    { scope: guildId ? "global+guild" : "global" },
+    "Discord worker slash commands cleared",
+  );
+}
+
 async function handleCommand(
   interaction: ChatInputCommandInteraction,
   sendDm: (
@@ -210,7 +228,19 @@ export function startDiscordBot(): void {
       worker.online = true;
 
       if (!isMainBot) {
-        logger.info("Discord worker bot is online");
+        try {
+          await clearCommands(
+            readyClient.application.id,
+            token,
+            process.env["DISCORD_GUILD_ID"],
+          );
+          logger.info("Discord worker bot is online");
+        } catch (error) {
+          logger.error(
+            { err: error },
+            "Discord worker slash command cleanup failed",
+          );
+        }
         return;
       }
 
