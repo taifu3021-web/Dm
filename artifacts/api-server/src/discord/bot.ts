@@ -7,8 +7,11 @@ import {
   Routes,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
+  type User,
 } from "discord.js";
 import { logger } from "../lib/logger";
+
+const DM_RATE_LIMIT_MS = 800;
 
 const commands = [
   new SlashCommandBuilder()
@@ -42,6 +45,25 @@ const commands = [
 let client: Client | undefined;
 let started = false;
 
+function createDmQueue() {
+  let queue: Promise<void> = Promise.resolve();
+
+  return (member: User, message: string): Promise<void> => {
+    const sendTask = queue.then(async () => {
+      try {
+        await member.send(message);
+      } finally {
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, DM_RATE_LIMIT_MS),
+        );
+      }
+    });
+
+    queue = sendTask.catch(() => undefined);
+    return sendTask;
+  };
+}
+
 async function registerCommands(applicationId: string, guildId?: string) {
   const token = process.env["DISCORD_BOT_TOKEN"];
   if (!token) {
@@ -62,6 +84,7 @@ async function registerCommands(applicationId: string, guildId?: string) {
 
 async function handleCommand(
   interaction: ChatInputCommandInteraction,
+  sendDm: (member: User, message: string) => Promise<void>,
 ): Promise<void> {
   if (interaction.commandName === "ping") {
     await interaction.reply({
@@ -114,7 +137,7 @@ async function handleCommand(
   await interaction.deferReply({ ephemeral: true });
 
   try {
-    await member.send(message);
+    await sendDm(member, message);
     await interaction.editReply(`已成功私訊 ${member.tag}。`);
   } catch (error) {
     logger.warn({ err: error, userId: member.id }, "Discord DM delivery failed");
@@ -139,6 +162,7 @@ export function startDiscordBot(): void {
   started = true;
 
   client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const sendDm = createDmQueue();
 
   client.once(Events.ClientReady, async (readyClient) => {
     try {
@@ -161,7 +185,7 @@ export function startDiscordBot(): void {
     }
 
     try {
-      await handleCommand(interaction);
+      await handleCommand(interaction, sendDm);
     } catch (error) {
       logger.error(
         { err: error, command: interaction.commandName },
