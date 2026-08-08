@@ -9,6 +9,8 @@ import {
   type ChatInputCommandInteraction,
   type User,
 } from "discord.js";
+import { and, asc, eq } from "drizzle-orm";
+import { db, discordLicensesTable } from "@workspace/db";
 import { logger } from "../lib/logger";
 
 const DM_RATE_LIMIT_MS = 800;
@@ -40,6 +42,41 @@ const commands = [
         .setMaxValue(MAX_REPEAT)
         .setRequired(false),
     ),
+  new SlashCommandBuilder()
+    .setName("license")
+    .setDescription("授權指定使用者")
+    .setDMPermission(false)
+    .addStringOption((option) =>
+      option
+        .setName("id")
+        .setDescription("使用者 ID")
+        .setMinLength(17)
+        .setMaxLength(20)
+        .setRequired(true),
+    )
+    .addStringOption((option) =>
+      option
+        .setName("note")
+        .setDescription("授權備註，可選填")
+        .setMaxLength(500)
+        .setRequired(false),
+    ),
+  new SlashCommandBuilder()
+    .setName("removelicense")
+    .setDescription("移除指定使用者的授權")
+    .setDMPermission(false)
+    .addStringOption((option) =>
+      option
+        .setName("id")
+        .setDescription("使用者 ID")
+        .setMinLength(17)
+        .setMaxLength(20)
+        .setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName("licenselist")
+    .setDescription("查看全部授權狀態清單")
+    .setDMPermission(false),
 ].map((command) => command.toJSON());
 
 type DmWorker = {
@@ -148,6 +185,76 @@ async function clearCommands(
   );
 }
 
+function isDiscordUserId(value: string): boolean {
+  return /^\d{17,20}$/.test(value);
+}
+
+async function requireGuildOwner(
+  interaction: ChatInputCommandInteraction,
+): Promise<boolean> {
+  if (!interaction.guildId || !interaction.guild) {
+    await interaction.reply({
+      content: "此指令只能在伺服器中使用。",
+      ephemeral: true,
+    });
+    return false;
+  }
+
+  if (interaction.user.id !== interaction.guild.ownerId) {
+    await interaction.reply({
+      content: "只有伺服器擁有者可以使用此指令。",
+      ephemeral: true,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+async function replyLicenseList(
+  interaction: ChatInputCommandInteraction,
+  guildId: string,
+): Promise<void> {
+  const licenses = await db
+    .select({
+      userId: discordLicensesTable.userId,
+      note: discordLicensesTable.note,
+    })
+    .from(discordLicensesTable)
+    .where(eq(discordLicensesTable.guildId, guildId))
+    .orderBy(asc(discordLicensesTable.userId));
+
+  if (licenses.length === 0) {
+    await interaction.reply("目前沒有任何授權資料。");
+    return;
+  }
+
+  const lines = licenses.map(({ userId, note }) => {
+    const normalizedNote = note?.replace(/\s+/g, " ").trim();
+    return normalizedNote
+      ? `ID: ${userId} | 狀態：已授權 | 備註：${normalizedNote}`
+      : `ID: ${userId} | 狀態：已授權`;
+  });
+
+  const chunks: string[] = [];
+  let current = `授權狀態清單（共 ${licenses.length} 筆）\n`;
+  for (const line of lines) {
+    if (current.length + line.length + 1 > 1900) {
+      chunks.push(current.trimEnd());
+      current = "";
+    }
+    current += `${line}\n`;
+  }
+  if (current.trim()) {
+    chunks.push(current.trimEnd());
+  }
+
+  await interaction.reply(chunks[0] ?? "目前沒有任何授權資料。");
+  for (const chunk of chunks.slice(1)) {
+    await interaction.followUp(chunk);
+  }
+}
+
 async function handleCommand(
   interaction: ChatInputCommandInteraction,
   sendDm: (
@@ -156,6 +263,82 @@ async function handleCommand(
     repeat: number,
   ) => Promise<number>,
 ): Promise<void> {
+  if (interaction.commandName === "license") {
+    if (!(await requireGuildOwner(interaction))) {
+      return;
+    }
+
+    const guildId = interaction.guildId as string;
+    const userId = interaction.options.getString("id", true).trim();
+    const note = interaction.options.getString("note")?.trim() || null;
+
+    if (!isDiscordUserId(userId)) {
+      await interaction.reply({
+        content: "使用者 ID 格式不正確。",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await db
+      .insert(discordLicensesTable)
+      .values({ guildId, userId, note })
+      .onConflictDoUpdate({
+        target: [discordLicensesTable.guildId, discordLicensesTable.userId],
+        set: { note, updatedAt: new Date() },
+      });
+
+    await interaction.reply(
+      note
+        ? `已授權使用者 ID：${userId}\n備註：${note}`
+        : `已授權使用者 ID：${userId}`,
+    );
+    return;
+  }
+
+  if (interaction.commandName === "removelicense") {
+    if (!(await requireGuildOwner(interaction))) {
+      return;
+    }
+
+    const guildId = interaction.guildId as string;
+    const userId = interaction.options.getString("id", true).trim();
+
+    if (!isDiscordUserId(userId)) {
+      await interaction.reply({
+        content: "使用者 ID 格式不正確。",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const deleted = await db
+      .delete(discordLicensesTable)
+      .where(
+        and(
+          eq(discordLicensesTable.guildId, guildId),
+          eq(discordLicensesTable.userId, userId),
+        ),
+      )
+      .returning({ id: discordLicensesTable.id });
+
+    await interaction.reply(
+      deleted.length > 0
+        ? `已移除使用者 ID：${userId} 的授權。`
+        : `找不到使用者 ID：${userId} 的授權資料。`,
+    );
+    return;
+  }
+
+  if (interaction.commandName === "licenselist") {
+    if (!(await requireGuildOwner(interaction))) {
+      return;
+    }
+
+    await replyLicenseList(interaction, interaction.guildId as string);
+    return;
+  }
+
   if (interaction.commandName !== "dm") {
     return;
   }
