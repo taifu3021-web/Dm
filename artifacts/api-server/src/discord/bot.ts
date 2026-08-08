@@ -2,7 +2,6 @@ import {
   Client,
   Events,
   GatewayIntentBits,
-  PermissionFlagsBits,
   REST,
   Routes,
   SlashCommandBuilder,
@@ -20,7 +19,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("dm")
     .setDescription("管理員對指定成員發送私訊")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator.toString())
+    .setDMPermission(false)
     .addUserOption((option) =>
       option
         .setName("member")
@@ -255,6 +254,24 @@ async function replyLicenseList(
   }
 }
 
+async function isLicensedUser(
+  guildId: string,
+  userId: string,
+): Promise<boolean> {
+  const [license] = await db
+    .select({ id: discordLicensesTable.id })
+    .from(discordLicensesTable)
+    .where(
+      and(
+        eq(discordLicensesTable.guildId, guildId),
+        eq(discordLicensesTable.userId, userId),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(license);
+}
+
 async function handleCommand(
   interaction: ChatInputCommandInteraction,
   sendDm: (
@@ -343,9 +360,17 @@ async function handleCommand(
     return;
   }
 
-  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+  if (!interaction.guildId) {
     await interaction.reply({
-      content: "只有伺服器管理員可以使用這個指令。",
+      content: "此指令只能在伺服器中使用。",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!(await isLicensedUser(interaction.guildId, interaction.user.id))) {
+    await interaction.reply({
+      content: "你尚未取得此伺服器的使用授權。",
       ephemeral: true,
     });
     return;
