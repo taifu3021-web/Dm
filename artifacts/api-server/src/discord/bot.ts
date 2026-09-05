@@ -184,6 +184,44 @@ async function clearCommands(
   );
 }
 
+function normalizeLogText(value: string): string {
+  return value.replace(/\s+/g, " ").replace(/@/g, "@​").trim().slice(0, 500);
+}
+
+async function sendDiscordLog(client: Client, message: string): Promise<void> {
+  const channelId = process.env["DISCORD_LOG_CHANNEL_ID"]?.trim();
+  if (!channelId) {
+    return;
+  }
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased()) {
+      logger.warn("Discord log channel is not text-based");
+      return;
+    }
+
+    const sendableChannel = channel as unknown as {
+      send: (payload: {
+        content: string;
+        allowedMentions: { parse: string[] };
+      }) => Promise<unknown>;
+    };
+
+    if (typeof sendableChannel.send !== "function") {
+      logger.warn("Discord log channel cannot receive messages");
+      return;
+    }
+
+    await sendableChannel.send({
+      content: normalizeLogText(message),
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    logger.warn({ err: error }, "Discord log delivery failed");
+  }
+}
+
 function isDiscordUserId(value: string): boolean {
   return /^\d{17,20}$/.test(value);
 }
@@ -279,6 +317,7 @@ async function handleCommand(
     message: string,
     repeat: number,
   ) => Promise<number>,
+  sendLog: (message: string) => Promise<void>,
 ): Promise<void> {
   if (interaction.commandName === "license") {
     if (!(await requireGuildOwner(interaction))) {
@@ -309,6 +348,11 @@ async function handleCommand(
       note
         ? `已授權使用者 ID：${userId}\n備註：${note}`
         : `已授權使用者 ID：${userId}`,
+    );
+    await sendLog(
+      note
+        ? `授權已新增或更新 | 使用者 ID：${userId} | 備註：${note}`
+        : `授權已新增或更新 | 使用者 ID：${userId}`,
     );
     return;
   }
@@ -344,6 +388,11 @@ async function handleCommand(
         ? `已移除使用者 ID：${userId} 的授權。`
         : `找不到使用者 ID：${userId} 的授權資料。`,
     );
+    await sendLog(
+      deleted.length > 0
+        ? `授權已移除 | 使用者 ID：${userId}`
+        : `移除授權失敗：找不到資料 | 使用者 ID：${userId}`,
+    );
     return;
   }
 
@@ -353,6 +402,12 @@ async function handleCommand(
     }
 
     await replyLicenseList(interaction, interaction.guildId as string);
+    await sendLog(`授權清單已查詢 | 筆數：${(
+      await db
+        .select({ id: discordLicensesTable.id })
+        .from(discordLicensesTable)
+        .where(eq(discordLicensesTable.guildId, interaction.guildId as string))
+    ).length}`);
     return;
   }
 
@@ -396,11 +451,15 @@ async function handleCommand(
     await interaction.editReply(
       `已由 ${workerCount} 台機器人各發送 ${repeat} 次，共 ${totalCount} 次。每台機器人每次發送間隔 0.8 秒。`,
     );
+    await sendLog(
+      `私訊發送成功 | 每台機器人：${repeat} 次 | 機器人數量：${workerCount} | 總次數：${totalCount}`,
+    );
   } catch (error) {
     logger.warn({ err: error }, "Discord DM delivery failed");
     await interaction.editReply(
       `無法完成每台機器人 ${repeat} 次的私訊任務。對方可能關閉了私人訊息，或機器人沒有權限傳送。`,
     );
+    await sendLog(`私訊發送失敗 | 每台機器人：${repeat} 次`);
   }
 }
 
@@ -459,6 +518,7 @@ export function startDiscordBot(): void {
           process.env["DISCORD_GUILD_ID"],
         );
         logger.info("Discord bot is online");
+        await sendDiscordLog(readyClient, "主機器人已上線。");
       } catch (error) {
         logger.error(
           { err: error },
@@ -477,7 +537,11 @@ export function startDiscordBot(): void {
       }
 
       try {
-        await handleCommand(interaction, dmDispatcher.send);
+        await handleCommand(
+          interaction,
+          dmDispatcher.send,
+          (message) => sendDiscordLog(client, message),
+        );
       } catch (error) {
         logger.error(
           { err: error, command: interaction.commandName },
@@ -494,6 +558,7 @@ export function startDiscordBot(): void {
         } else {
           await interaction.reply(response);
         }
+        await sendDiscordLog(client, "指令執行失敗。");
       }
     });
 
